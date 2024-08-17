@@ -1,0 +1,38 @@
+- data
+- pre-process and validation
+- model trainning and selection
+- model testing and validation
+- presentation
+
+***
+- first time 
+- usage_unit split
+- values/
+
+spike new service spin up?
+- how to account for this? (new service , increased price -> accept and disregard as anomaly)
+
+*****s
+-- explain service type
+-- relationship service and cost
+   - threshold
+ 
+   
+-- identify anomalies (spike, threshold)and attempt to justify
+  - statistical explanation? Visual explanation
+  - spikes and values below 0
+  - how often they occur
+  - flag services not normally used
+  
+  companies:
+  -- Compute Engine,  , Networking, Cloud Logging,Kubernetes Engine'
+ Cloud Storage , Vertex AI
+ 
+ 
+*Retiefs model? ets model
+*anomaly based on specific service type? or general?
+
+- forecast based on window size to train the model, and then predict in the future (generalised)
+
+
+

@@ -1,0 +1,20 @@
+#sudatahack
+
+LInkedIN
+- Spatialedge
+- SULaunchLab
+
+-----
+*Problem statement: develop a solution to effectively identify unexpected spikes in billing data
+& sell it ?? (LaunchLab - entrepreneurship opportunity)
+* new issue
+*time series data?
+-- get a basic/rudementary solution -> improve upon it
+-- unsupervised -> det what constitutes anomalous price
+use online tools as start ?
+don't recreate libraries/tool 
+** WORK FAST  **
+
+consider:
+- underuse an anomaly? -> check on time/outliers outside of normal behaviour
+- 
