@@ -171,7 +171,201 @@ def append_to_csv(file_name, hyperparams, metrics, candidate_features, current_b
     df = pd.DataFrame([row])
     df.to_csv(file_name, mode='a', header=False, index=False)
 
-########################################### Model training ##########################################################
+# Function for data loading and splitting
+def load_dataset(data, n_past, future_steps, target_col, batch_size=32, test_size=0.2):
+    # Prepare dataset with lagging features that have been standardized
+    transformed_data = multipleOutputForexDataset(data, n_past, future_steps, target_col)
+    
+    # Train-test split
+    train_dataset, test_dataset = train_test_split(transformed_data, test_size=test_size, random_state=42, shuffle=False)
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    return train_loader, test_loader
+
+# Function to initialize the model
+def initialize_model(input_size, hidden_size, num_layers, output_size, device):
+    W_hidden = []
+    b_hidden = []
+    
+    # Initialize hidden layers
+    W_hidden.append(torch.nn.Parameter(torch.randn(input_size, hidden_size).to(device)))
+    b_hidden.append(torch.nn.Parameter(torch.randn(hidden_size).to(device)))
+    
+    for i in range(1, num_layers):
+        W_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, hidden_size).to(device)))
+        b_hidden.append(torch.nn.Parameter(torch.randn(hidden_size).to(device)))
+    
+    # Initialize output layer
+    W_output = torch.nn.Parameter(torch.randn(hidden_size, output_size).to(device))
+    b_output = torch.nn.Parameter(torch.randn(output_size).to(device))
+    
+    # Return the model parameters
+    return W_hidden, b_hidden, W_output, b_output
+
+
+# Forward pass function
+def forward_pass(features, W_hidden, b_hidden, W_output, b_output, num_layers):
+    hidden_activation = F.relu(features @ W_hidden[0] + b_hidden[0])
+    
+    for i in range(1, num_layers):
+        hidden_activation = F.relu(hidden_activation @ W_hidden[i] + b_hidden[i])
+    
+    output = hidden_activation @ W_output + b_output
+    return torch.clamp(torch.nan_to_num(output, nan=0.0), min=-50.0, max=50.0)
+
+# Training function
+def train_model(train_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device, num_epochs=1000):
+    for epoch in range(num_epochs):
+        for batch_idx, (features, labels) in enumerate(train_loader):
+            # Move data to GPU
+            features, labels = features.to(device), labels.to(device)
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            predicted_close = forward_pass(features, W_hidden, b_hidden, W_output, b_output, len(W_hidden))
+            
+            # Compute loss
+            loss = F.mse_loss(predicted_close, labels)
+            
+            # Backward pass and optimization
+            loss.backward()
+            optimizer.step()
+
+# Evaluation function - test set
+def evaluate_model(test_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device):
+    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = 0, 0, 0, 0, 0, 0
+    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = 0, 0, 0, 0, 0, 0
+    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = 0, 0, 0, 0, 0, 0
+
+    with torch.no_grad():
+        for features, labels in test_loader:
+            features, labels = features.to(device), labels.to(device)
+            
+            predicted_close = forward_pass(features, W_hidden, b_hidden, W_output, b_output, num_layers)
+            
+            for day_idx, day_name in zip(range(3), ['1_day', '3_day', '5_day']):
+                y_true = labels[:, day_idx]
+                y_pred = predicted_close[:, day_idx]
+                
+                mse, mae, mape, mbe, rmse, r2 = calculate_metrics(y_true, y_pred)
+                
+                if day_name == '1_day':
+                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = mse, mae, mape, mbe, rmse, r2
+                elif day_name == '3_day':
+                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = mse, mae, mape, mbe, rmse, r2
+                elif day_name == '5_day':
+                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = mse, mae, mape, mbe, rmse, r2
+            
+    # Evaluuate average model performance
+
+    return mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3, mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
+
+
+# Main function to run the training and evaluation
+def run_training(data, learning_rate, n_past, future_steps, target_col, hidden_size, num_layers, output_size, device):
+    train_loader, test_loader = load_dataset(data, n_past, future_steps, target_col)
+
+    input_size = data.shape[1]  # Adjust based on your features
+
+    W_hidden, b_hidden, W_output, b_output = initialize_model(input_size * n_past, hidden_size, num_layers, output_size, device)
+
+    # Combine all parameters
+    params = W_hidden + b_hidden + [W_output, b_output]
+    
+    # Initialize the optimizer
+    optimizer = torch.optim.SGD(params, lr=learning_rate)
+
+    # Train the model
+    train_model(train_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
+
+    # Evaluate the model
+    results = evaluate_model(test_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
+    
+    return results
+
+def forward_selection(multiVarData, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, learning_rate,best_score ,  device):
+    current_best_features = ['Close']
+    best_score = best_score  # Initialize best score
+
+    for feature in OG_features:
+        # Add the new feature to the current best features
+        candidate_features = current_best_features + [feature]
+
+        # Ensure 'Close' is at the end of the list
+        if 'Close' in candidate_features:
+            candidate_features.remove('Close')
+        candidate_features.append('Close')
+
+        # Ensure 'Close' is also the last in current_best_features
+        if 'Close' in current_best_features:
+            current_best_features.remove('Close')
+        current_best_features.append('Close')
+
+        # Select the subset of data with the current candidate features
+        data_subset = multiVarData[candidate_features]
+
+        # Load dataset using the modularized function
+        train_loader, test_loader = load_dataset(data_subset, n_past, future_steps, target_col)
+
+        # Initialize the model with the selected features
+        input_size = data_subset.shape[1]  # number of features
+        W_hidden, b_hidden, W_output, b_output = initialize_model(input_size * n_past, hidden_size, num_layers, output_size, device)
+
+        # Initialize the optimizer
+        params = W_hidden + b_hidden + [W_output, b_output]
+        optimizer = torch.optim.SGD(params, lr=learning_rate)
+
+        # Train the model
+        train_model(train_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
+
+        # Evaluate the model
+        mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3, mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = evaluate_model(
+            test_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
+
+
+        # Calculate the average MAE for the 1-day, 3-day, and 5-day forecasts
+        average_mse = (mse_1 + mse_3 + mse_5) / 3
+
+        # If the new feature improves performance, keep it
+        if average_mse < best_score:
+            best_score = average_mse
+            current_best_features.append(feature)
+
+            # Save the architecture and features of the best model (based on validation set)
+
+            best_model_sw = n_past
+            best_model_hn= hidden_size
+            best_model_hl = num_layers
+            best_model_mse = best_score
+        
+        hyperparams = [n_past, learning_rate, num_layers, hidden_size]
+
+        metrics = [
+                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
+                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
+                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
+                ]
+        
+        # Append the current results to the CSV, including the feature under consideration
+        append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature)
+
+    
+def record_original_performance(file_name, hyperparams, metrics):
+    # store the results based on just the closing price
+    current_best_features='Close'
+    candidate_features = 'Close'
+    feature = 'Close'
+
+    # Append the current results to the CSV, including the feature under consideration
+    append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature)
+
+
+########################################### Model Data Class ##########################################################
 
 
 class multipleOutputForexDataset:
@@ -200,10 +394,7 @@ FXdata = data_loader(file_path)
 
 future_steps = [1 , 3, 5]
 target_col =  -1
-
-
 ########################################### Neural Network model and Architecture development ##############################
-
 
 # Define the hyperparameter grid
 OG_features = ['Open', 'High', 'Low', 'Volume', '50_sma', '200_sma', '50_ema',
@@ -216,7 +407,6 @@ hidden_neurons_grid = [8 ,10, 16, 32, 64, 128]  # Number of neurons per hidden l
 hidden_layers_grid = [1, 2, 3, 4]  # Number of hidden layers
 learning_rate_grid = [0.001]  # Learning rates
 
-
 #Generate initial features
 multiVarData = multivariateFeatureEngineering(FXdata)
 col = [col for col in multiVarData.columns if col!='Close'] + ['Close'] #Arrange the columns
@@ -227,15 +417,11 @@ best_features = ['Close']
 best_score = float('inf')  # Initialize best score
 
 import time
-
-# Record the start time
-# start_time = time.time()
+start_time = time.time()
 
 # Initialize CSV file
 file_name = 'GPU_NN_hyperparameter_search_results.csv'
 initialize_csv(file_name)
-# feature_names_used = list(features)  # Store this for later use
-
 
 for n_past in lookback_window_grid:
 
@@ -245,316 +431,27 @@ for n_past in lookback_window_grid:
 
             for learning_rate in learning_rate_grid:
 
-            
-                ############################################## Data Loading for Closing Feature #################################
-                data_subset = (multiVarData['Close']).to_frame() # Select initial start feature>> convert 1d series tro 2d
-
-                # Prepare the dataset for the current lookback window
-                transformed_data = multipleOutputForexDataset(data_subset, n_past, future_steps, target_col) # returns lagged features
-
-                # Train-test split
-                train_dataset, test_dataset = train_test_split(transformed_data, test_size=0.2, random_state=42, shuffle=False)
-
-                # Load train and test data
-                train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-                test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-
-                ######################################## Define Initial Model Architecture ###########################################
-
-
-                # Initialize weights and biases for the layers
-                W_hidden = []
-                b_hidden = []
-                input_size = data_subset.shape[1]  # number of original features
-
-                # First layer initialization
-                W_hidden.append(torch.nn.Parameter(torch.randn(input_size * n_past, hidden_size, dtype=torch.float32).to(device)))
-                b_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, dtype=torch.float32).to(device)))
-
-                # Initialize additional hidden layers if required
-                for i in range(1, num_layers):
-                    W_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, hidden_size, dtype=torch.float32).to(device)))
-                    b_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, dtype=torch.float32).to(device)))
-
-                # Output layer initialization
-                W_output = torch.nn.Parameter(torch.randn(hidden_size, output_size, dtype=torch.float32).to(device))
-                b_output = torch.nn.Parameter(torch.randn(output_size, dtype=torch.float32).to(device))
-                ########################################## Initialize optimizers #################################################
-                # Combine all the parameters into a list
-                params1 = W_hidden + b_hidden + [W_output, b_output]
-
-                # Initialize the optimizer
-                optimizer1 = torch.optim.SGD(params1, lr=learning_rate)
-
-                # Define forward propagation
-                def forward(features):
-
-                    # Input to first hidden layer
-                    hidden_activation = F.relu(features @ W_hidden[0] + b_hidden[0])
-
-                    # Forward through remaining hidden layers
-                    for i in range(1, num_layers):
-                        hidden_activation = F.relu(hidden_activation @ W_hidden[i] + b_hidden[i])
-
-                    # Output layer
-                    output = hidden_activation @ W_output + b_output
-
-                    # Check for NaN values and replace them with 0
-                    output = torch.nan_to_num(output, nan=0.0)
-
-                    # Limit the output values between -50 and 50
-                    output = torch.clamp(output, min=-50.0, max=50.0)
-
-                    return output
-
-                ########################################## Training the model##################################################
-
-                num_epochs = 1000
-
-                for epoch in range(num_epochs):
-                    for batch_idx, (features, labels) in enumerate(train_loader):
-
-                        # Move data to GPU
-                        features = features.to(device)
-                        labels = labels.to(device)
-
-                        # Zero gradients
-                        optimizer1.zero_grad()
-
-                        # Forward pass
-                        predicted_close = forward(features)
-
-                        # Compute loss
-                        loss = F.mse_loss(predicted_close, labels)
-
-                        # Backward pass
-                        loss.backward()
-
-                        # Update weights (gradient descent)
-                        optimizer1.step()
-                    
-                    # Evaluate model after each epoch - early stopping
-                        
-
-                ########################################### Model Evaluation and Result recording #######################################################
-
-                # Evaluate on the test data and compute metrics for each forecast horizon
-                mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = 0, 0, 0, 0, 0, 0
-                mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = 0, 0, 0, 0, 0, 0
-                mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = 0, 0, 0, 0, 0, 0
-
-                with torch.no_grad():
-                    for features, labels in test_loader:
-                        #move data to GPU 
-                        features = features.to(device)
-                        labels = labels.to(device)
-
-                        predicted_close = forward(features)
-
-                        # Compute metrics for each forecast horizon (1-day, 3-day, 5-day)
-                        for day_idx, day_name in zip(range(3), ['1_day', '3_day', '5_day']):
-
-                            # remove conversion to numpy
-                            y_true = labels[:, day_idx]
-                            y_pred = predicted_close[:, day_idx]
-
-                            mse, mae, mape, mbe, rmse, r2 = calculate_metrics(y_true, y_pred)
-
-                            # Assign to the correct metric based on the day
-                            if day_name == '1_day':
-                                mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = mse, mae, mape, mbe, rmse, r2
-                            elif day_name == '3_day':
-                                mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = mse, mae, mape, mbe, rmse, r2
-                            elif day_name == '5_day':
-                                mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = mse, mae, mape, mbe, rmse, r2
-
+                ########################################## Getting results on original feature ##################################################
                 
-                average_mae = (mae_1 + mae_3 + mae_5) / 3
-
-                best_score  = average_mae
-
-                current_best_features = best_features.copy()  # Start with 'Close'
-
-                feature_under_consideration = 'Close'  # before forward selection only close used
-
-                candidate_features = 'Close'
-
-                # Prepare hyperparameters and metrics
+                mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3, mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 =  run_training((multiVarData['Close']).to_frame(), learning_rate,  n_past, future_steps, target_col,hidden_size , num_layers, output_size,  device)
+                
+                best_score = (mse_1 + mse_3+ mse_5)/3 # use for forward selection
                 hyperparams = [n_past, learning_rate, num_layers, hidden_size]
                 metrics = [
-                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
-                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
-                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
-                ]
-
-                # Append the current results to the CSV, including the feature under consideration
-                append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature_under_consideration)
-
-
+                            mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
+                            mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
+                            mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
+                        ]
+                
+                record_original_performance(file_name, hyperparams, metrics)
+                
                 ###############################################################################################
                 #                                          Peform Forward Selection                           #
                 ############################################################################################### 
             
-            
-                for feature in OG_features:
-                    # Add the new feature to the current best features and selectipn
-                    candidate_features = current_best_features + [feature]
+                forward_selection(multiVarData,OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size,learning_rate, best_score, device )
 
-                    # Put close at the end of the list
-                    if 'Close' in candidate_features:
-                        candidate_features.remove('Close')
-
-                    candidate_features.append('Close')
-
-                        # Put close at the end of the list
-                    if 'Close' in current_best_features:
-                        current_best_features.remove('Close')
-
-                    current_best_features.append('Close')
-
-                    data_subset = multiVarData[candidate_features] # select subset of data
-
-                    ######################################## Define Model Architecture based on tranformed Features ###########################################
-                
-                   
-                    # Initialize weights and biases for the layers
-                    W_hidden = []
-                    b_hidden = []
-                    input_size = data_subset.shape[1]  # number of original features
-
-                    # First layer initialization
-                    W_hidden.append(torch.nn.Parameter(torch.randn(input_size * n_past, hidden_size, dtype=torch.float32).to(device)))
-                    b_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, dtype=torch.float32).to(device)))
-
-                    # Initialize additional hidden layers if required
-                    for i in range(1, num_layers):
-                        W_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, hidden_size, dtype=torch.float32).to(device)))
-                        b_hidden.append(torch.nn.Parameter(torch.randn(hidden_size, dtype=torch.float32).to(device)))
-
-                    # Output layer initialization
-                    W_output = torch.nn.Parameter(torch.randn(hidden_size, output_size, dtype=torch.float32).to(device))
-                    b_output = torch.nn.Parameter(torch.randn(output_size, dtype=torch.float32).to(device))
-
-                    ############################## Define the optimiser #######################
-                     # Combine all the parameters into a list
-                    params = W_hidden + b_hidden + [W_output, b_output]
-
-                    # Initialize the optimizer
-                    optimizer = torch.optim.SGD(params, lr=learning_rate)
-
-                    # Define forward propagation
-                    def forward(features):
-                        # Input to first hidden layer
-                        hidden_activation = F.relu(features @ W_hidden[0] + b_hidden[0])
-
-                        # Forward through remaining hidden layers
-                        for i in range(1, num_layers):
-                            hidden_activation = F.relu(hidden_activation @ W_hidden[i] + b_hidden[i])
-
-                        # Output layer
-                        output = hidden_activation @ W_output + b_output
-
-                        # Check for NaN values and replace them with 0
-                        output = torch.nan_to_num(output, nan=0.0)
-
-                        # Limit the output values between -50 and 50
-                        output = torch.clamp(output, min=-50.0, max=50.0)
-
-                        return output
-
-                    ############################################## Data Loading #################################################
-
-                    # Prepare the dataset for the current lookback window
-                    transformed_data = multipleOutputForexDataset(data_subset, n_past, future_steps, target_col)
-
-                    # Train-test split
-                    train_dataset, test_dataset = train_test_split(transformed_data, test_size=0.2, random_state=42, shuffle=False)
-
-                    # Load train and test data
-                    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-                    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-    
-                    ########################################## Training the model##################################################
-                    num_epochs = 1000
-
-                    for epoch in range(num_epochs):
-                        for batch_idx, (features, labels) in enumerate(train_loader):
-
-                            # Move data to GPU
-                            features = features.to(device)
-                            labels = labels.to(device)
-
-                            # Zero gradients
-                            optimizer.zero_grad()
-
-                            # Forward pass
-                            predicted_close = forward(features)
-
-                            # Compute loss
-                            loss = F.mse_loss(predicted_close, labels)
-
-                            # Backward pass
-                            loss.backward()
-
-                            # Gradient descent
-                            optimizer.step()
-
-                
-                    ########################################### Model Evaluation and Result recording #######################################################
-                                            
-                    # Evaluate on the test data and compute metrics for each forecast horizon
-                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = 0, 0, 0, 0, 0, 0
-                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = 0, 0, 0, 0, 0, 0
-                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = 0, 0, 0, 0, 0, 0
-
-                    with torch.no_grad():
-                        for features, labels in test_loader:
-
-                            # Move data to GPU
-                            features = features.to(device)
-                            labels = labels.to(device)
-
-                            predicted_close = forward(features)
-
-                            # Compute metrics for each forecast horizon (1-day, 3-day, 5-day)
-                            for day_idx, day_name in zip(range(3), ['1_day', '3_day', '5_day']):
-                              
-                                # remove conversion to numpy
-                                y_true = labels[:, day_idx]
-                                y_pred = predicted_close[:, day_idx]
-
-                                mse, mae, mape, mbe, rmse, r2 = calculate_metrics(y_true, y_pred)
-
-                                # Assign to the correct metric based on the day
-                                if day_name == '1_day':
-                                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = mse, mae, mape, mbe, rmse, r2
-                                elif day_name == '3_day':
-                                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = mse, mae, mape, mbe, rmse, r2
-                                elif day_name == '5_day':
-                                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = mse, mae, mape, mbe, rmse, r2
-
-
-                    average_mae = (mae_1 + mae_3 + mae_5) / 3
-
-                    mae_score = average_mae
-
-                    # If the new feature improves performance, keep it
-                    if  mae_score < best_score:
-                        best_score = mae_score
-                        current_best_features.append(feature)
-
-                    # Prepare hyperparameters and metrics
-                    hyperparams = [n_past, learning_rate, num_layers, hidden_size]
-                    metrics = [
-                        mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
-                        mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
-                        mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
-                    ]
-
-                    # Append the current results to the CSV, including the feature under consideration
-                    append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature)
+              
 
 
 
