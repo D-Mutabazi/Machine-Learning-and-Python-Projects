@@ -6,8 +6,15 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
 import torch.nn.functional as F
 from sklearn.metrics import mean_absolute_error, r2_score
+import time
+
+
+################################ Measure Program execution time
+start_time  = time.time()
+
 
 
 ################################## Functions ####################################
@@ -100,25 +107,14 @@ def multivariateFeatureLagMultiStep(data, n_past, future_steps, target_column):
     features = np.array(features)  # Shape: (num_samples, n_past, num_features)
     response = np.array(response)  # Shape: (num_samples, len(future_steps))
 
+    # Standardize the Features
+    scaler  =  StandardScaler()
+    features = scaler.fit_transform(features)
+
     # Flatten the features to 2D array: (num_samples, n_past * num_features)
     features_flat = features.reshape(features.shape[0], -1)
 
     return features_flat, response
-
-
-# Unique feature combinations
-def featuresComblist(features):
-    import itertools
-
-    initial_feature = ['Close'] # Starting with the closing price
-
-    # Get all combinations of the features list and add to the initial feature (Closing Price)
-    feature_combinations = []
-    for i in range(len(features) + 1):
-        for combination in itertools.combinations(features, i):
-            feature_combinations.append(list(combination)+ initial_feature )
-    
-    return feature_combinations
 
 
 def initialize_csv(file_name):
@@ -129,21 +125,56 @@ def initialize_csv(file_name):
                'MSE_5_day', 'MAE_5_day', 'MAPE_5_day', 'MBE_5_day', 'RMSE_5_day', 'R2_5_day']
     df = pd.DataFrame(columns=headers)
     df.to_csv(file_name, index=False)
+
+
+
 # Function to calculate performance metrics
+# def calculate_metrics(y_true, y_pred):
+#     # Ensure y_true and y_pred are PyTorch tensors for MSE calculation
+#     mse = F.mse_loss(torch.tensor(y_pred), torch.tensor(y_true)).item()
+    
+#     # Convert to NumPy arrays for the remaining metrics
+#     y_true = y_true.numpy() if isinstance(y_true, torch.Tensor) else y_true
+#     y_pred = y_pred.numpy() if isinstance(y_pred, torch.Tensor) else y_pred
+    
+#     mae = mean_absolute_error(y_true, y_pred)
+#     mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100  # MAPE
+#     mbe = np.mean(y_true - y_pred)  # Mean Bias Error (MBE)
+#     rmse = np.sqrt(mse)  # RMSE
+#     r2 = r2_score(y_true, y_pred)  # R²
+#     return mse, mae, mape, mbe, rmse, r2
+
+
+# Updated calculate_metrics function using PyTorch operations
 def calculate_metrics(y_true, y_pred):
-    # Ensure y_true and y_pred are PyTorch tensors for MSE calculation
-    mse = F.mse_loss(torch.tensor(y_pred), torch.tensor(y_true)).item()
+    # check y_true and y_pred are PyTorch tensors for MSE calculation
+    if not isinstance(y_true, torch.Tensor):
+        y_true = torch.tensor(y_true, dtype=torch.float32)
+    if not isinstance(y_pred, torch.Tensor):
+        y_pred = torch.tensor(y_pred, dtype=torch.float32)
+
+    # Mean Squared Error (MSE)
+    mse = F.mse_loss(y_pred, y_true).item()
     
-    # Convert to NumPy arrays for the remaining metrics
-    y_true = y_true.numpy() if isinstance(y_true, torch.Tensor) else y_true
-    y_pred = y_pred.numpy() if isinstance(y_pred, torch.Tensor) else y_pred
-    
-    mae = mean_absolute_error(y_true, y_pred)
-    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100  # MAPE
-    mbe = np.mean(y_true - y_pred)  # Mean Bias Error (MBE)
-    rmse = np.sqrt(mse)  # RMSE
-    r2 = r2_score(y_true, y_pred)  # R²
-    return mse, mae, mape, mbe, rmse, r2
+    # Mean Absolute Error (MAE)
+    mae = F.l1_loss(y_pred, y_true).item()  # l1_loss computes the absolute difference
+
+    # Mean Absolute Percentage Error (MAPE)
+    mape = (torch.mean(torch.abs((y_true - y_pred) / y_true)) * 100).item()
+
+    # Mean Bias Error (MBE)
+    mbe = (torch.mean(y_true - y_pred)).item()
+
+    # Root Mean Squared Error (RMSE)
+    rmse = torch.sqrt(F.mse_loss(y_pred, y_true)).item()
+
+    # R² score
+    ss_res = torch.sum((y_true - y_pred) ** 2)
+    ss_tot = torch.sum((y_true - torch.mean(y_true)) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot != 0 else float('nan')
+
+    return mse, mae, mape, mbe, rmse, r2.item()
+
 
 # Function to append results to CSV (includes candidate_features and current_best_features)
 def append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature_under_consideration):
@@ -290,7 +321,7 @@ for n_past in lookback_window_grid:
 
                 ########################################## Training the model##################################################
 
-                num_epochs = 100
+                num_epochs = 1000
 
                 for epoch in range(num_epochs):
                     for batch_idx, (features, labels) in enumerate(train_loader):
@@ -445,7 +476,7 @@ for n_past in lookback_window_grid:
 
     
                     ########################################## Training the model##################################################
-                    num_epochs = 100
+                    num_epochs = 1000
 
                     for epoch in range(num_epochs):
                         for batch_idx, (features, labels) in enumerate(train_loader):
@@ -522,13 +553,15 @@ for n_past in lookback_window_grid:
                     # Append the current results to the CSV, including the feature under consideration
                     append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature)
 
-                    # # Record the end time
-                    # end_time = time.time()
 
-                    # # Calculate the elapsed time
-                    # elapsed_time = end_time - start_time
 
-                    # print(f"Execution time for this set of parameters: {elapsed_time:.2f} seconds")
+# Record the end time
+end_time = time.time()
+
+# Calculate the elapsed time
+elapsed_time = end_time - start_time
+
+print(f"Execution time for this set of parameters: {elapsed_time:.2f} seconds")
 
 
 print("Grid search completed and results saved to CSV!")
