@@ -120,7 +120,7 @@ def multivariateFeatureLagMultiStep(data, n_past, future_steps, target_column):
 
 def initialize_csv(file_name):
     headers = ['lookback_window', 'feature_under_consideration', 'candidate_features', 'current_best_features', 
-               'learning_rate', 'number_of_hidden_layers', 'number_of_hidden_neurons',
+               'learning_rate', 'number_of_hidden_layers', 'number_of_hidden_neurons','best_model_sw', 'best_model_hn','best_model_hl', 'best_model_mse',
                'MSE_1_day', 'MAE_1_day', 'MAPE_1_day', 'MBE_1_day', 'RMSE_1_day', 'R2_1_day',
                'MSE_3_day', 'MAE_3_day', 'MAPE_3_day', 'MBE_3_day', 'RMSE_3_day', 'R2_3_day',
                'MSE_5_day', 'MAE_5_day', 'MAPE_5_day', 'MBE_5_day', 'RMSE_5_day', 'R2_5_day']
@@ -160,13 +160,13 @@ def calculate_metrics(y_true, y_pred):
 
 
 # Function to append results to CSV (includes candidate_features and current_best_features)
-def append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature_under_consideration):
+def append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature_under_consideration, best_model_info):
     # Convert lists of features to strings to store them in the CSV
     # candidate_features_str = ', '.join(candidate_features)
     # current_best_features_str = ', '.join(current_best_features)
     
     # Append the feature under consideration, candidate, and best features to hyperparameters list
-    row = [hyperparams[0], feature_under_consideration, candidate_features, current_best_features] + hyperparams[1:] + metrics
+    row = [hyperparams[0], feature_under_consideration, candidate_features, current_best_features] + hyperparams[1:] + metrics+ best_model_info
     
     df = pd.DataFrame([row])
     df.to_csv(file_name, mode='a', header=False, index=False)
@@ -288,9 +288,14 @@ def run_training(data, learning_rate, n_past, future_steps, target_col, hidden_s
     
     return results
 
-def forward_selection(multiVarData, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, learning_rate,best_score ,  device):
+def forward_selection(multiVarData, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, learning_rate,best_score , best_model_info,  device):
     current_best_features = ['Close']
     best_score = best_score  # Initialize best score
+
+    best_model_sw = best_model_info[0]
+    best_model_hn= best_model_info[1]
+    best_model_hl = best_model_info[2]
+    best_model_mse = best_model_info[3]
 
     for feature in OG_features:
         # Add the new feature to the current best features
@@ -343,6 +348,8 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
             best_model_hl = num_layers
             best_model_mse = best_score
         
+        best_model_info = [best_model_sw, best_model_hn,best_model_hl, best_model_mse ]
+
         hyperparams = [n_past, learning_rate, num_layers, hidden_size]
 
         metrics = [
@@ -352,17 +359,18 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
                 ]
         
         # Append the current results to the CSV, including the feature under consideration
-        append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature)
+        best_model_info = [best_model_sw, best_model_hn,best_model_hl, best_model_mse ]
+        append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature,best_model_info)
 
     
-def record_original_performance(file_name, hyperparams, metrics):
+def record_original_performance(file_name, hyperparams, metrics, best_model_info):
     # store the results based on just the closing price
     current_best_features='Close'
     candidate_features = 'Close'
     feature = 'Close'
 
     # Append the current results to the CSV, including the feature under consideration
-    append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature)
+    append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature, best_model_info)
 
 
 ########################################### Model Data Class ##########################################################
@@ -437,19 +445,21 @@ for n_past in lookback_window_grid:
                 
                 best_score = (mse_1 + mse_3+ mse_5)/3 # use for forward selection
                 hyperparams = [n_past, learning_rate, num_layers, hidden_size]
+                best_model_info =[n_past, hidden_size,num_layers, best_score ]
+
                 metrics = [
                             mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
                             mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
                             mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
                         ]
                 
-                record_original_performance(file_name, hyperparams, metrics)
+                record_original_performance(file_name, hyperparams, metrics, best_model_info)
                 
                 ###############################################################################################
                 #                                          Peform Forward Selection                           #
                 ############################################################################################### 
             
-                forward_selection(multiVarData,OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size,learning_rate, best_score, device )
+                forward_selection(multiVarData,OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size,learning_rate, best_score,best_model_info,  device )
 
               
 
