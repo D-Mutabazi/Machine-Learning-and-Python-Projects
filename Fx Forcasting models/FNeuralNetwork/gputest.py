@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 import torch.nn.functional as F
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error
 import time
 
 
@@ -121,9 +121,9 @@ def multivariateFeatureLagMultiStep(data, n_past, future_steps, target_column):
 def initialize_csv(file_name):
     headers = ['lookback_window', 'feature_under_consideration', 'candidate_features', 'current_best_features', 
                'learning_rate', 'number_of_hidden_layers', 'number_of_hidden_neurons','best_model_sw', 'best_model_hn','best_model_hl', 'best_model_mse',
-               'MSE_1_day', 'MAE_1_day', 'MAPE_1_day', 'MBE_1_day', 'RMSE_1_day', 'R2_1_day',
-               'MSE_3_day', 'MAE_3_day', 'MAPE_3_day', 'MBE_3_day', 'RMSE_3_day', 'R2_3_day',
-               'MSE_5_day', 'MAE_5_day', 'MAPE_5_day', 'MBE_5_day', 'RMSE_5_day', 'R2_5_day']
+               'MSE_1_day', 'MAE_1_day', 'MAPE_1_day', 'MBE_1_day', 'RMSE_1_day',
+               'MSE_3_day', 'MAE_3_day', 'MAPE_3_day', 'MBE_3_day', 'RMSE_3_day', 
+               'MSE_5_day', 'MAE_5_day', 'MAPE_5_day', 'MBE_5_day', 'RMSE_5_day']
     df = pd.DataFrame(columns=headers)
     df.to_csv(file_name, index=False)
 
@@ -154,9 +154,8 @@ def calculate_metrics(y_true, y_pred):
     mape = torch.mean(torch.abs((y_true - y_pred) / y_true)).item() * 100  # MAPE
     mbe = torch.mean(y_true - y_pred).item()  # Mean Bias Error (MBE)
     rmse = torch.sqrt(torch.mean((y_true - y_pred) ** 2)).item()  # RMSE
-    r2 = r2_score(y_true.cpu().numpy(), y_pred.cpu().numpy())  # R² needs NumPy conversion for sklearn
 
-    return mse, mae, mape, mbe, rmse, r2
+    return mse, mae, mape, mbe, rmse
 
 
 # Function to append results to CSV (includes candidate_features and current_best_features)
@@ -177,13 +176,17 @@ def load_dataset(data, n_past, future_steps, target_col, batch_size=32, test_siz
     transformed_data = multipleOutputForexDataset(data, n_past, future_steps, target_col)
     
     # Train-test split
-    train_dataset, test_dataset = train_test_split(transformed_data, test_size=test_size, random_state=42, shuffle=False)
+    train_dataset, test_val_dataset = train_test_split(transformed_data, test_size=test_size, random_state=42, shuffle=False)
     
+    # test - validation split 
+    validation_dataset, test_dataset =  train_test_split(test_val_dataset, test_size=0.5, random_state=42, shuffle=False)
+
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    validation_loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
-    return train_loader, test_loader
+    return train_loader, validation_loader, test_loader
 
 # Function to initialize the model
 def initialize_model(input_size, hidden_size, num_layers, output_size, device):
@@ -216,31 +219,62 @@ def forward_pass(features, W_hidden, b_hidden, W_output, b_output, num_layers):
     output = hidden_activation @ W_output + b_output
     return torch.clamp(torch.nan_to_num(output, nan=0.0), min=-50.0, max=50.0)
 
-# Training function
-def train_model(train_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device, num_epochs=1000):
+# Training function with early stopping
+def train_model(train_loader, val_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device, num_epochs=2000, patience=20, min_delta=0.001):
+    best_loss = float('inf')  # Initialize the best loss as infinity
+    patience_counter = 0  # Counter to track how long we've gone without improvement
+
     for epoch in range(num_epochs):
+        # Training loop
         for batch_idx, (features, labels) in enumerate(train_loader):
-            # Move data to GPU
             features, labels = features.to(device), labels.to(device)
-            
+
             # Zero gradients
             optimizer.zero_grad()
-            
+
             # Forward pass
             predicted_close = forward_pass(features, W_hidden, b_hidden, W_output, b_output, len(W_hidden))
-            
+
             # Compute loss
             loss = F.mse_loss(predicted_close, labels)
-            
+
             # Backward pass and optimization
             loss.backward()
             optimizer.step()
 
+        # After each epoch, evaluate on the validation set
+        val_loss = 0.0
+        with torch.no_grad():
+            for features, labels in val_loader:
+                features, labels = features.to(device), labels.to(device)
+                predicted_close = forward_pass(features, W_hidden, b_hidden, W_output, b_output, len(W_hidden))
+                val_loss += F.mse_loss(predicted_close, labels).item()
+
+        val_loss /= len(val_loader)  # Average validation loss
+
+        # Early stopping logic with min_delta
+        if (best_loss - val_loss) > min_delta:  # Only count as an improvement if the difference is larger than min_delta
+            best_loss = val_loss  # Update best loss
+            patience_counter = 0  # Reset patience counter
+        else:
+            patience_counter += 1  # Increment patience counter if no significant improvement
+
+        # If patience counter exceeds the patience limit, stop training
+        if patience_counter >= patience:
+            print(f"Early stopping at epoch {epoch+1}, validation loss did not improve for {patience} consecutive epochs.")
+            break
+
+        # Optionally print loss for each epoch
+        print(f"Epoch {epoch+1}/{num_epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}")
+
+
+
+
 # Evaluation function - test set
 def evaluate_model(test_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device):
-    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = 0, 0, 0, 0, 0, 0
-    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = 0, 0, 0, 0, 0, 0
-    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = 0, 0, 0, 0, 0, 0
+    mse_1, mae_1, mape_1, mbe_1, rmse_1  = 0, 0, 0, 0, 0
+    mse_3, mae_3, mape_3, mbe_3, rmse_3  = 0, 0, 0, 0, 0
+    mse_5, mae_5, mape_5, mbe_5, rmse_5 = 0, 0, 0, 0, 0
 
     with torch.no_grad():
         for features, labels in test_loader:
@@ -252,23 +286,23 @@ def evaluate_model(test_loader, W_hidden, b_hidden, W_output, b_output, num_laye
                 y_true = labels[:, day_idx]
                 y_pred = predicted_close[:, day_idx]
                 
-                mse, mae, mape, mbe, rmse, r2 = calculate_metrics(y_true, y_pred)
+                mse, mae, mape, mbe, rmse = calculate_metrics(y_true, y_pred)
                 
                 if day_name == '1_day':
-                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1 = mse, mae, mape, mbe, rmse, r2
+                    mse_1, mae_1, mape_1, mbe_1, rmse_1 = mse, mae, mape, mbe, rmse
                 elif day_name == '3_day':
-                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3 = mse, mae, mape, mbe, rmse, r2
+                    mse_3, mae_3, mape_3, mbe_3, rmse_3 = mse, mae, mape, mbe, rmse
                 elif day_name == '5_day':
-                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = mse, mae, mape, mbe, rmse, r2
+                    mse_5, mae_5, mape_5, mbe_5, rmse_5 = mse, mae, mape, mbe, rmse
             
     # Evaluuate average model performance
 
-    return mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3, mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
+    return mse_1, mae_1, mape_1, mbe_1, rmse_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, mse_5, mae_5, mape_5, mbe_5, rmse_5
 
 
 # Main function to run the training and evaluation
 def run_training(data, learning_rate, n_past, future_steps, target_col, hidden_size, num_layers, output_size, device):
-    train_loader, test_loader = load_dataset(data, n_past, future_steps, target_col)
+    train_loader,validation_loader,  test_loader = load_dataset(data, n_past, future_steps, target_col)
 
     input_size = data.shape[1]  # Adjust based on your features
 
@@ -281,21 +315,23 @@ def run_training(data, learning_rate, n_past, future_steps, target_col, hidden_s
     optimizer = torch.optim.SGD(params, lr=learning_rate)
 
     # Train the model
-    train_model(train_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
+    train_model(train_loader, validation_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
 
     # Evaluate the model
-    results = evaluate_model(test_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
+    results = evaluate_model(validation_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
     
     return results
 
 def forward_selection(multiVarData, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, learning_rate,best_score , best_model_info,  device):
     current_best_features = ['Close']
-    best_score = best_score  # Initialize best score
 
     best_model_sw = best_model_info[0]
     best_model_hn= best_model_info[1]
     best_model_hl = best_model_info[2]
     best_model_mse = best_model_info[3]
+
+    best_score = best_model_mse  # Initialize best score from just closing price
+
 
     for feature in OG_features:
         # Add the new feature to the current best features
@@ -315,7 +351,7 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
         data_subset = multiVarData[candidate_features]
 
         # Load dataset using the modularized function
-        train_loader, test_loader = load_dataset(data_subset, n_past, future_steps, target_col)
+        train_loader, validation_loader, test_loader = load_dataset(data_subset, n_past, future_steps, target_col)
 
         # Initialize the model with the selected features
         input_size = data_subset.shape[1]  # number of features
@@ -325,18 +361,18 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
         params = W_hidden + b_hidden + [W_output, b_output]
         optimizer = torch.optim.SGD(params, lr=learning_rate)
 
-        # Train the model
-        train_model(train_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
+        # Train the model- Find best weights, using ealry stopping regularization to prevent overfitting 
+        train_model(train_loader,validation_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
 
-        # Evaluate the model
-        mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3, mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 = evaluate_model(
-            test_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
+        # Evaluate the model - validation set >> Keep track of performance based on differenet hyperparameters
+        mse_1, mae_1, mape_1, mbe_1, rmse_1, mse_3, mae_3, mape_3, mbe_3, rmse_3,  mse_5, mae_5, mape_5, mbe_5, rmse_5 = evaluate_model(
+            validation_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
 
 
         # Calculate the average MAE for the 1-day, 3-day, and 5-day forecasts
         average_mse = (mse_1 + mse_3 + mse_5) / 3
 
-        # If the new feature improves performance, keep it
+        # If the new feature improves performance, keep it (Test best model on test set)
         if average_mse < best_score:
             best_score = average_mse
             current_best_features.append(feature)
@@ -350,12 +386,12 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
         
         best_model_info = [best_model_sw, best_model_hn,best_model_hl, best_model_mse ]
 
-        hyperparams = [n_past, learning_rate, num_layers, hidden_size]
+        hyperparams = [n_past, learning_rate, num_layers, hidden_size] # store information for every iteration
 
         metrics = [
-                    mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
-                    mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
-                    mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
+                    mse_1, mae_1, mape_1, mbe_1, rmse_1,
+                    mse_3, mae_3, mape_3, mbe_3, rmse_3,
+                    mse_5, mae_5, mape_5, mbe_5, rmse_5
                 ]
         
         # Append the current results to the CSV, including the feature under consideration
@@ -368,7 +404,6 @@ def record_original_performance(file_name, hyperparams, metrics, best_model_info
     current_best_features=['Close']
     candidate_features = ['Close']
     feature = ['Close']
-
     # Append the current results to the CSV, including the feature under consideration
     append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature, best_model_info)
 
@@ -419,10 +454,7 @@ learning_rate_grid = [0.001]  # Learning rates
 multiVarData = multivariateFeatureEngineering(FXdata)
 col = [col for col in multiVarData.columns if col!='Close'] + ['Close'] #Arrange the columns
 multiVarData=   multiVarData[col]
-               
-# Forward selection features
-best_features = ['Close']
-best_score = float('inf')  # Initialize best score
+
 
 import time
 start_time = time.time()
@@ -430,6 +462,7 @@ start_time = time.time()
 # Initialize CSV file
 file_name = 'GPU_NN_hyperparameter_search_results.csv'
 initialize_csv(file_name)
+best_score = float('inf')
 
 for n_past in lookback_window_grid:
 
@@ -439,18 +472,23 @@ for n_past in lookback_window_grid:
 
             for learning_rate in learning_rate_grid:
 
-                ########################################## Getting results on original feature ##################################################
+                ########################### Getting results on original feature ###############################
                 
-                mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3, mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5 =  run_training((multiVarData['Close']).to_frame(), learning_rate,  n_past, future_steps, target_col,hidden_size , num_layers, output_size,  device)
+                mse_1, mae_1, mape_1, mbe_1, rmse_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, mse_5, mae_5, mape_5, mbe_5, rmse_5 =  run_training((multiVarData['Close']).to_frame(), learning_rate,  n_past, future_steps, target_col,hidden_size , num_layers, output_size,  device)
                 
-                best_score = (mse_1 + mse_3+ mse_5)/3 # use for forward selection
+                avg_mse  = (mse_1 + mse_3+ mse_5)/3 # use for forward selection
+
+                # Record only the improving models reulst and information
+                if avg_mse  <= best_score:
+                    best_score =  avg_mse
+                    best_model_info =[n_past, hidden_size,num_layers, best_score ] # store model arhicteecture and info
+
                 hyperparams = [n_past, learning_rate, num_layers, hidden_size]
-                best_model_info =[n_past, hidden_size,num_layers, best_score ]
 
                 metrics = [
-                            mse_1, mae_1, mape_1, mbe_1, rmse_1, r2_1,
-                            mse_3, mae_3, mape_3, mbe_3, rmse_3, r2_3,
-                            mse_5, mae_5, mape_5, mbe_5, rmse_5, r2_5
+                            mse_1, mae_1, mape_1, mbe_1, rmse_1, 
+                            mse_3, mae_3, mape_3, mbe_3, rmse_3,
+                            mse_5, mae_5, mape_5, mbe_5, rmse_5
                         ]
                 
                 record_original_performance(file_name, hyperparams, metrics, best_model_info)
@@ -464,6 +502,15 @@ for n_past in lookback_window_grid:
               
 
 
+################################################# Evaluate on the test set #################################################
+                
+# Load test data
+
+#get best model hyper-parameters
+                          
+# get  best model corresponding weights
+                
+# evaluate best model on test set
 
 # Record the end time
 end_time = time.time()
