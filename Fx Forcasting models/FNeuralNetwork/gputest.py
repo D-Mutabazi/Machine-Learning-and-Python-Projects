@@ -162,11 +162,11 @@ def calculate_metrics(y_true, y_pred):
 # Function to append results to CSV (includes candidate_features and current_best_features)
 def append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature_under_consideration, best_model_info):
     # Convert lists of features to strings to store them in the CSV
-    # candidate_features_str = ', '.join(candidate_features)
-    # current_best_features_str = ', '.join(current_best_features)
+    candidate_features_str = ', '.join(candidate_features)
+    current_best_features_str = ', '.join(current_best_features)
     
     # Append the feature under consideration, candidate, and best features to hyperparameters list
-    row = [hyperparams[0], feature_under_consideration, candidate_features, current_best_features] + hyperparams[1:] + metrics+ best_model_info
+    row = [hyperparams[0], feature_under_consideration, candidate_features_str, current_best_features_str] + hyperparams[1:] + best_model_info+ metrics
     
     df = pd.DataFrame([row])
     df.to_csv(file_name, mode='a', header=False, index=False)
@@ -365,9 +365,9 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
     
 def record_original_performance(file_name, hyperparams, metrics, best_model_info):
     # store the results based on just the closing price
-    current_best_features='Close'
-    candidate_features = 'Close'
-    feature = 'Close'
+    current_best_features=['Close']
+    candidate_features = ['Close']
+    feature = ['Close']
 
     # Append the current results to the CSV, including the feature under consideration
     append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature, best_model_info)
