@@ -408,21 +408,18 @@ def run_training(data, learning_rate, n_past, future_steps, target_col, hidden_s
         # Save the best model weights and scaler
         torch.save({'model_weights': best_model_weights, 'scaler': best_scaler}, 'best_model_and_scaler.pth')
     
-        print(f'run_training function MSE score: {current_best_score}')
+        # print(f'run_training function MSE score: {current_best_score}')
+        print(f'run_training function MSE score: {current_best_score}', flush=True)
+
 
     return results
 
 def forward_selection(multiVarData, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, learning_rate, best_score, best_model_info, device):
-
-    current_best_features = ['Close']    # Start with the best model features as just 'Close'
-    # best_score = best_model_info[3]  # Initialize with the score from the initial pass
-    current_best_score = best_score
-    best_scaler =  None
-    best_model_weights ={}
+    current_best_features = ['Close']  # Start with the best model features as just 'Close'
+    current_best_score = best_score  # Initialize with the best score
 
     for feature in OG_features:
-
-        candidate_features = current_best_features + [feature]         # Add the new feature to the current best features
+        candidate_features = current_best_features + [feature]  # Add the new feature to the current best features
 
         # Ensure 'Close' is always at the end of the list
         if 'Close' in candidate_features:
@@ -433,46 +430,42 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
             current_best_features.remove('Close')
         current_best_features.append('Close')
 
-        data_subset = multiVarData[candidate_features]    # Select the subset of data with the current candidate features
+        data_subset = multiVarData[candidate_features]  # Select the subset of data with the current candidate features
 
-        train_loader, validation_loader, scaler = load_dataset(data_subset, n_past, future_steps, target_col)   # Load dataset using the modularized function (both standardized correctly)
+        # Load the dataset
+        train_loader, validation_loader, scaler = load_dataset(data_subset, n_past, future_steps, target_col)
 
-        input_size = data_subset.shape[1]          # Initialize the model with the selected features
-
+        # Initialize and train the model
+        input_size = data_subset.shape[1]
         W_hidden, b_hidden, W_output, b_output = initialize_model(input_size * n_past, hidden_size, num_layers, output_size, device)
-
-        params = W_hidden + b_hidden + [W_output, b_output]         # Initialize the optimizer
-
+        params = W_hidden + b_hidden + [W_output, b_output]
         optimizer = torch.optim.SGD(params, lr=learning_rate)
 
-        train_model(train_loader, validation_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)   # Train the model - Use early stopping to prevent overfitting
-
-        # Evaluate the model based on feature combination - validation set
+        train_model(train_loader, validation_loader, W_hidden, b_hidden, W_output, b_output, optimizer, device)
+        # Evaluate the model
         mse_1, mae_1, mape_1, mbe_1, rmse_1, mse_3, mae_3, mape_3, mbe_3, rmse_3, mse_5, mae_5, mape_5, mbe_5, rmse_5 = evaluate_model(
             validation_loader, W_hidden, b_hidden, W_output, b_output, num_layers, device)
 
         # Calculate the average MSE for the 1-day, 3-day, and 5-day forecasts
         average_mse = (mse_1 + mse_3 + mse_5) / 3
 
-        # If the new feature improves performance, keep it
+        # Only update the best features and score if the score improves
         if average_mse < current_best_score:
             current_best_score = average_mse
             current_best_features.append(feature)
 
-            best_scaler = scaler  # Store the scaler for the best model
-
+            # Update best model weights and scaler
+            best_scaler = scaler
             best_model_weights = {
-
-                'W_hidden': [w.detach().clone() for w in W_hidden],  # Detach and clone to avoid modifications
+                'W_hidden': [w.detach().clone() for w in W_hidden],
                 'b_hidden': [b.detach().clone() for b in b_hidden],
                 'W_output': W_output.detach().clone(),
                 'b_output': b_output.detach().clone(),
             }
-    
             torch.save({'model_weights': best_model_weights, 'scaler': best_scaler}, 'best_model_and_scaler.pth')
 
-            # Save the architecture and features of the best model (based on validation set)
-            best_model_info = [n_past, hidden_size, num_layers, best_score, current_best_features.copy()]
+            # Update the best model info only if the score improves
+            best_model_info = [n_past, hidden_size, num_layers, current_best_score, current_best_features.copy()]
 
         # Store the hyperparameters and metrics for this iteration
         hyperparams = [n_past, learning_rate, num_layers, hidden_size]
@@ -485,7 +478,8 @@ def forward_selection(multiVarData, OG_features, n_past, future_steps, target_co
         # Append the results to the CSV
         append_to_csv(file_name, hyperparams, metrics, candidate_features, current_best_features, feature, best_model_info)
 
-    return current_best_score 
+    return current_best_score, best_model_info
+
 
 
 def record_original_performance(file_name, hyperparams, metrics, best_model_info):
@@ -515,6 +509,8 @@ def run_initial_pass(multiVarData, future_steps, target_col, hidden_size, num_la
         current_best_score = avg_mse
 
         print(f'run_initial_pass function MSE score: {current_best_score}')
+        print(f'run_initial_pass function MSE score: {current_best_score}', flush=True)
+
 
 
     # Store the hyperparameters and metrics for the initial pass
@@ -570,12 +566,15 @@ initialize_csv(file_name)
 OG_features = ['Open', 'High', 'Low', 'Volume', '50_sma', '200_sma', '50_ema',
        '100_ema', 'MACD_line', 'Signal_line', 'ADX', 'RSI', 'stoch_k',
        'stoch_d', 'ATR']
+
+
 output_size = 3  # Output layer size (closing price t =  [1 , 3, 5])
 
 # hyper-parameterss
 lookback_window_grid = [1, 3, 5, 7, 10]  
 hidden_neurons_grid = [8 ,10, 16, 32, 64, 128]  
 hidden_layers_grid = [1, 2, 3, 4]  
+ 
 
 ##############################################  Feature Engineering #########################################
 multiVarData = multivariateFeatureEngineering(FXdata)
@@ -616,19 +615,24 @@ for n_past in lookback_window_grid:
             #                                          Peform Forward Selection                           #
             ############################################################################################### 
         
-            fs_score = forward_selection(training_validation_data, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, 0.001, best_score, best_model_info, device)
+           # Perform forward selection
+            fs_score, fs_best_model_info = forward_selection(
+                training_validation_data, OG_features, n_past, future_steps, target_col, hidden_size, num_layers, output_size, 0.001, best_score, best_model_info, device
+            )
 
-            if  best_model_info[3]  < best_score:
-                best_score =  best_model_info[3] 
-              
+            if fs_score < best_score:
+                best_score = fs_score
+                best_model_info = fs_best_model_info
 
 
 # ################################################# Evaluate on the test set #################################################
                 
 ''' Using and evaluating on the test data '''
 
+print(best_model_info)
+
 # best model get >> features, lookback window , target column>> 
-test_set_best_features = test_set[best_model_features[4]]  # >> on test set, select subset of features based on best features
+test_set_best_features = test_set[best_model_info[4]]  # >> on test set, select subset of features based on best features
 col = [col for col in test_set_best_features.columns if col!='Close'] + ['Close'] #Arrange the columns
 test_set_best_features = test_set_best_features[col]     # >> ensure target col is at the end
 
